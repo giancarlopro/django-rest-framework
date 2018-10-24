@@ -15,11 +15,13 @@ from django.utils.safestring import SafeText
 from django.utils.translation import ugettext_lazy as _
 
 from rest_framework import permissions, serializers, status
-from rest_framework.compat import coreapi
+from rest_framework.compat import coreapi, coreschema, yaml
 from rest_framework.decorators import action
+from rest_framework.exceptions import ErrorDetail
 from rest_framework.renderers import (
     AdminRenderer, BaseRenderer, BrowsableAPIRenderer, DocumentationRenderer,
-    HTMLFormRenderer, JSONRenderer, SchemaJSRenderer, StaticHTMLRenderer
+    HTMLFormRenderer, JSONOpenAPIRenderer, JSONRenderer, OpenAPIRenderer,
+    SchemaJSRenderer, StaticHTMLRenderer, _BaseOpenAPIRenderer
 )
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -844,3 +846,173 @@ class TestSchemaJSRenderer(TestCase):
         output = renderer.render('data', renderer_context={"request": request})
         assert "'ImRhdGEi'" in output
         assert "'b'ImRhdGEi''" not in output
+
+
+@pytest.mark.skipif(not coreapi, reason='coreapi is not installed')
+class _BaseOpenAPIRendererTests(TestCase):
+    def setUp(self):
+        self.document = coreapi.Document(
+            url='https://www.example.org/api/',
+            title='Server Monitoring API',
+            content={
+                'test': {
+                    'list': coreapi.Link(
+                        url='https://www.example.org/api/test/',
+                        action='get',
+                        fields=[
+                            coreapi.Field(
+                                name='name',
+                                required=True,
+                                location='path',
+                                schema=coreschema.String(
+                                    title='name',
+                                    description='Name field'
+                                )
+                            )
+                        ]
+                    )
+                }
+            }
+        )
+        self.structure = {
+            'openapi': '3.0.0',
+            'info': {
+                'version': '',
+                'title': 'Server Monitoring API',
+                'description': ''
+            },
+            'servers': [
+                {
+                    'url': 'https://www.example.org/api/'
+                }
+            ],
+            'paths': {
+                '/api/test/': {
+                    'get': {
+                        'operationId': 'test_list',
+                        'parameters': [
+                            {
+                                'name': 'name',
+                                'in': 'path',
+                                'required': True,
+                                'schema': {
+                                    'type': 'string',
+                                    'title': ('name',),
+                                    'description': 'Name field'
+                                }
+                            }
+                        ],
+                        'tags': ['test']
+                    }
+                }
+            }
+        }
+        self.renderer = _BaseOpenAPIRenderer()
+
+    def test_get_paths(self):
+        paths = self.renderer.get_paths(self.document)
+
+        assert paths == self.structure['paths']
+
+    def test_get_operation(self):
+        sample_op = self.structure['paths']['/api/test/']['get']
+
+        tag = 'test'
+        name = 'list'
+        link = self.document.data[tag][name]
+
+        operation = self.renderer.get_operation(link, name, tag=tag)
+
+        assert operation == sample_op
+
+    def test_get_parameters(self):
+        link = self.document.data['test']['list']
+
+        parameters = self.renderer.get_parameters(link)
+
+        assert parameters[0]['name'] == 'name'
+        assert parameters[0]['in'] == 'path'
+        assert parameters[0]['required'] is True
+
+    def test_get_schema(self):
+        link = self.document.data['test']['list']
+        field = link.fields[0]
+
+        schema = self.renderer.get_schema(field.schema)
+
+        assert schema['title'] == ('name',)
+        assert schema['description'] == 'Name field'
+        assert schema['type'] == 'string'
+
+    def test_get_structure(self):
+        structure = self.renderer.get_structure(self.document)
+
+        assert structure == self.structure
+
+
+@pytest.mark.skipif(not coreapi, reason='coreapi is not installed')
+class TestOpenAPIRenderer(TestCase):
+
+    def setUp(self):
+        self.renderer = OpenAPIRenderer()
+        self.media_type = 'application/vnd.oai.openapi+json;q=0.8'
+
+    def test_render(self):
+        data = coreapi.Document(
+            url='https://www.example.org/api/',
+            title='Server Monitoring API',
+            content={
+                'test': {
+                    'list': coreapi.Link(
+                        url='https://www.example.org/api/test/',
+                        action='get'
+                    )
+                }
+            }
+        )
+
+        sample = yaml.dump(
+            self.renderer.get_structure(data),
+            default_flow_style=False
+        ).encode('utf-8')
+
+        output = self.renderer.render(
+            data,
+            media_type=self.media_type
+        )
+
+        assert output == sample
+
+
+@pytest.mark.skipif(not coreapi, reason='coreapi is not installed')
+class TestJSONOpenAPIRenderer(TestCase):
+
+    def setUp(self):
+        self.renderer = JSONOpenAPIRenderer()
+        self.media_type = 'application/vnd.oai.openapi+json;q=0.8'
+
+    def test_render(self):
+        data = coreapi.Document(
+            url='https://www.example.org/api/',
+            title='Server Monitoring API',
+            content={
+                'test': {
+                    'list': coreapi.Link(
+                        url='https://www.example.org/api/test/',
+                        action='get'
+                    )
+                }
+            }
+        )
+
+        sample = json.dumps(
+            self.renderer.get_structure(data),
+            indent=4
+        ).encode('utf-8')
+
+        output = self.renderer.render(
+            data,
+            media_type=self.media_type
+        )
+
+        assert output == sample
